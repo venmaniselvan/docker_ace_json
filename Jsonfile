@@ -1,0 +1,84 @@
+def executeBuildSteps(configuration) {
+    configuration.steps.each {
+        stage(it.name) {
+            println "Executing Stage $it.name" 
+            switch(it.name) {
+                case 'Clean':
+                    //clean the jenkins workspace
+                    cleanWs()
+					println "cleaned successful"
+					break
+				case 'Clone':
+				    //now clone the git repos
+				    git branch: "$it.branch", credentialsId: "bitbucket", poll: false, url: "$it.url"
+				    break
+				case 'Build docker image':
+				    //build the docker images using dockerfile
+				    sh "docker build -t $it.imageName -f $it.fileName ."
+				    break
+				case 'Run Cointainer':
+				    //get the existing container id using container name and check if its running or not. if run means stop that container
+				    sh "docker ps -f name=$it.contnrName -q | xargs --no-run-if-empty docker container stop"
+				    //now we remove that container
+				    sh "docker container ls -a -fname=$it.contnrName -q | xargs -r docker container rm"
+				    //sh "docker images | grep ibmcom/ace-mq1 |awk '{print $3}'"
+				    //run that docker images into dokcer container 
+				    sh "docker run --name $it.contnrName -d -p $it.aceUIPort:7600 -p $it.aceDeployFlowPort:7800 -p $it.aceHTTPSEndPointPort:7843 --env LICENSE=accept --env ACE_SERVER_NAME=$it.serverName --mount type=bind,src=$it.srcDir,dst=$it.dstDir $it.imageName"
+				    break
+				case 'Copy bar from container':
+				    //now we copy the bar file from running container to local machine
+				    //previously we run docker container that propose is only docker copy is only working in runnig container
+				    sh "docker cp $it.contnrName:$it.barPath ${env.WORKSPACE}"
+				    //check that name of container is running. if running means stop container
+				    sh "docker ps -f name=$it.contnrName -q | xargs --no-run-if-empty docker container stop"
+				    //remove that container
+				    sh "docker container ls -a -fname=$it.contnrName -q | xargs -r docker container rm"
+				    //remove that temporary generated image
+				    sh "docker rmi $it.imageName"
+				    break
+				case 'Push bar to git':
+				    //create the new directory and set as jenkins runnig directory
+				    dir("${env.WORKSPACE}/push") {
+				        //clone the repos
+				        git url: "$it.barSCMURL",branch: "$it.branch", credentialsId: "bitbucket", poll: false
+			            //copy bar file to current running directory
+				        sh "cp '${env.WORKSPACE}/$it.barName' ."
+				        //Now i am going to add all file and commit particular file with msg
+				        sh "git add --all && git commit -m \"Frmo Jenkins Automation\" $it.barName"
+				        //push the bar file into repos
+				        sh "git push https://$it.uName:$it.passWd@bitbucket.org/venmaniselvan/push_code.git"
+				    }
+				    break
+				case 'Final docker image for deloyment':
+				    //generate a docker image using dockerfile
+				    sh "docker build -t $it.imageName -f $it.fileName ."
+				    break
+				case 'Run Deployment Container':
+				    //check name of the conationer is runnig or not. if its run means stop and remove
+				    sh "docker ps -f name=$it.contnrName -q | xargs --no-run-if-empty docker container stop"
+				    sh "docker container ls -a -fname=$it.contnrName -q | xargs -r docker container rm"
+				    //sh "docker images | grep ibmcom/ace-mq1 |awk '{print $3}'"
+				    //run that docker images into dokcer container 
+				    sh "docker run --name $it.contnrName -d -p $it.aceUIPort:7600 -p $it.aceDeployFlowPort:7800 -p $it.aceHTTPSEndPointPort:7843 --env LICENSE=accept --env ACE_SERVER_NAME=$it.serverName --mount type=bind,src=$it.srcDir,dst=$it.dstDir $it.imageName"
+				default:
+                    println "No Stage with found"
+            }
+        }
+    }
+}
+//which node should be execute this pipeline script
+node {  
+   def config 
+   stage ('Clone Configuration') {
+       //colne the json file from git
+       git branch: "${branch}", credentialsId: "bitbucket", poll: false, url: "${repo_url}"
+   }
+   stage ('Read Configuration') {
+       //read the json file
+       def file = readFile "${filename}"+".json"
+       println file
+       //parse the json file
+       config = new groovy.json.JsonSlurperClassic().parseText(file)
+       executeBuildSteps(config)
+   }
+}
